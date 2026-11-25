@@ -148,21 +148,34 @@ pub(crate) fn choose_remote_playback_source(
     cached_path: Option<String>,
     source: RemoteSourceCredentials,
     remote_path: String,
-) -> RemotePlaybackSource {
+) -> Result<RemotePlaybackSource, String> {
     if let Some(path) = cached_path.filter(|path| !path.trim().is_empty()) {
         if std::path::Path::new(&path).is_file() {
-            return RemotePlaybackSource::Cached { path };
+            return Ok(RemotePlaybackSource::Cached { path });
         }
         #[cfg(test)]
-        return RemotePlaybackSource::Cached { path };
+        return Ok(RemotePlaybackSource::Cached { path });
     }
 
-    RemotePlaybackSource::Stream(RemoteStreamSource {
+    let (url, username, password) = if source.provider == "navidrome" {
+        (
+            super::navidrome::stream_url(&source, &remote_path)?.to_string(),
+            None,
+            None,
+        )
+    } else {
+        (
+            webdav::build_url(&source, &remote_path),
+            source.username,
+            source.password,
+        )
+    };
+    Ok(RemotePlaybackSource::Stream(RemoteStreamSource {
         remote_uri: remote_uri.to_string(),
-        url: webdav::build_url(&source, &remote_path),
-        username: source.username,
-        password: source.password,
-    })
+        url,
+        username,
+        password,
+    }))
 }
 
 pub(crate) fn remote_playback_source(
@@ -176,16 +189,14 @@ pub(crate) fn remote_playback_source(
         let normalized_uri = stored_remote_uri
             .clone()
             .unwrap_or_else(|| remote_uri.to_string());
+        if let Some(path) = super::local_library::resolve(&conn, &source, &normalized_uri)? {
+            return Ok(RemotePlaybackSource::Cached { path });
+        }
         let cached_path = get_song_cache_path(&conn, &normalized_uri)?;
         (source, remote_path, etag, stored_remote_uri, cached_path)
     };
     let normalized_uri = stored_remote_uri.unwrap_or_else(|| remote_uri.to_string());
-    Ok(choose_remote_playback_source(
-        &normalized_uri,
-        cached_path,
-        source,
-        remote_path,
-    ))
+    choose_remote_playback_source(&normalized_uri, cached_path, source, remote_path)
 }
 
 pub(crate) async fn cache_remote_file(
@@ -247,7 +258,11 @@ pub(crate) async fn ensure_cached_path(
 ) -> Result<String, String> {
     let (source, remote_path, etag, stored_remote_uri) = {
         let conn = db_state.conn.lock().map_err(|error| error.to_string())?;
-        get_source_for_remote_uri(&conn, remote_uri)?
+        let lookup = get_source_for_remote_uri(&conn, remote_uri)?;
+        if let Some(path) = super::local_library::resolve(&conn, &lookup.0, remote_uri)? {
+            return Ok(path);
+        }
+        lookup
     };
     let normalized_uri = stored_remote_uri.unwrap_or_else(|| remote_uri.to_string());
     let cache_path_str =
@@ -288,7 +303,8 @@ mod tests {
             Some("C:\\cache\\song.flac".to_string()),
             remote_source(),
             "/song.flac".to_string(),
-        );
+        )
+        .unwrap();
 
         assert!(matches!(
             plan,
@@ -303,7 +319,8 @@ mod tests {
             None,
             remote_source(),
             "/song.flac".to_string(),
-        );
+        )
+        .unwrap();
 
         match plan {
             RemotePlaybackSource::Stream(stream) => {

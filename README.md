@@ -19,6 +19,15 @@
   [![QQ Group](https://img.shields.io/badge/QQ%E7%BE%A4-1085716541-df3e3e?style=flat-square&logo=tencent-qq&logoColor=white)](https://qm.qq.com/cgi-bin/qm/qr?k=xxxx)
 </div>
 
+## Navidrome 远程音乐库
+
+此分支基于 Lycia Player 1.5.4。进入「设置 → 远程音乐库」，添加来源并选择 Navidrome，填写服务根地址、用户名和密码，然后保存并同步。地址可包含反向代理的子路径。Navidrome 网页末尾的 `/app` 应省略。密码保存在当前用户的 Windows 凭据管理器。
+
+在「我的歌单」顶部切换歌单来源可查看服务器歌单。手动同步会更新歌曲索引和歌单快照。客户端只读访问服务器，歌单内容与顺序由 Navidrome 管理。
+
+如果这台电脑已有同一批音频，可在来源设置中选择「本地音频缓存库」。同步按文件大小查找候选，然后比较文件头部、中部和尾部的数据。仍有多个候选时再比较完整 SHA-256。播放时先检查匹配文件的大小和修改时间，文件变化或缺失会回退到下载缓存或远程流。清理远程缓存只处理应用自己的下载目录。设置里的本地匹配数量可用来检查离线可用范围。
+
+
 ---
 
 > [!IMPORTANT]

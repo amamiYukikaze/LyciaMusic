@@ -25,11 +25,16 @@ export const createPlayerPersistence = ({ keys }: { keys: PlayerPersistenceKeys 
   const { playQueuePaths } = storeToRefs(playbackStore);
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
+  let restored = false;
+  const enablePersistence = () => { restored = true; };
+
   const flushPersistedState = () => {
     if (persistTimer) {
       clearTimeout(persistTimer);
       persistTimer = null;
     }
+
+    if (!restored) return;
 
     playerStorage.writePlayerState({
       playlistPathKey: keys.playerPlaylistPaths,
@@ -64,6 +69,7 @@ export const createPlayerPersistence = ({ keys }: { keys: PlayerPersistenceKeys 
   };
 
   return {
+    enablePersistence,
     flushPersistedState,
     schedulePersistedState,
     dispose,

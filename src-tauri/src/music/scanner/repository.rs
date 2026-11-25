@@ -18,7 +18,7 @@ pub(super) fn scan_change_chunk_size(existing_song_count: i64, to_add_count: usi
 }
 
 fn ensure_artist_id(
-    conn: &rusqlite::Transaction<'_>,
+    conn: &rusqlite::Connection,
     artist_cache: &mut HashMap<String, i64>,
     artist_name: &str,
 ) -> Result<i64, String> {
@@ -47,7 +47,7 @@ fn ensure_artist_id(
 }
 
 fn load_song_ids_by_paths(
-    conn: &rusqlite::Transaction<'_>,
+    conn: &rusqlite::Connection,
     paths: &[String],
 ) -> Result<HashMap<String, i64>, String> {
     if paths.is_empty() {
@@ -72,7 +72,7 @@ fn load_song_ids_by_paths(
 }
 
 fn sync_song_artists_batch(
-    conn: &rusqlite::Transaction<'_>,
+    conn: &rusqlite::Connection,
     songs: &[Song],
     song_ids: &HashMap<String, i64>,
     artist_cache: &mut HashMap<String, i64>,
@@ -153,7 +153,7 @@ fn apply_insert_batch(
     #[cfg(debug_assertions)]
     let start_time = std::time::Instant::now();
 
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let tx = conn.savepoint().map_err(|error| error.to_string())?;
     {
         let mut insert_stmt = tx
             .prepare(
@@ -288,7 +288,7 @@ fn apply_update_batch(
         return Ok(());
     }
 
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let tx = conn.savepoint().map_err(|error| error.to_string())?;
     {
         let mut update_stmt = tx
             .prepare(
@@ -377,7 +377,7 @@ fn apply_delete_batch(conn: &mut rusqlite::Connection, paths: &[String]) -> Resu
         return Ok(());
     }
 
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let tx = conn.savepoint().map_err(|error| error.to_string())?;
     {
         let mut delete_stmt = tx
             .prepare("DELETE FROM songs WHERE path = ?1")

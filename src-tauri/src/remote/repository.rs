@@ -31,7 +31,6 @@ fn write_password_to_keyring_verified(source_id: &str, password: &str) -> bool {
 }
 
 fn delete_password_from_keyring(source_id: &str) {
-    if crate::data_storage::is_portable() { return; }
     if let Ok(entry) = keyring_entry(source_id) {
         let _ = entry.delete_credential();
     }
@@ -45,7 +44,7 @@ fn attach_keyring_password(mut source: RemoteSourceCredentials) -> RemoteSourceC
 }
 
 fn migrate_db_password_to_keyring(conn: &rusqlite::Connection, source: &RemoteSourceCredentials) {
-    if crate::data_storage::is_portable() { return; }
+    if source.provider == "webdav" && crate::data_storage::is_portable() { return; }
     let Some(password) = source.password.as_deref() else {
         return;
     };
@@ -60,7 +59,7 @@ fn migrate_db_password_to_keyring(conn: &rusqlite::Connection, source: &RemoteSo
 // Portable profiles must carry their WebDAV credentials to the next computer.
 pub(crate) fn preserve_portable_credentials(conn: &rusqlite::Connection) -> Result<(), String> {
     if !crate::data_storage::is_portable() { return Ok(()); }
-    let mut stmt = conn.prepare("SELECT id FROM remote_sources WHERE password IS NULL").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id FROM remote_sources WHERE provider = 'webdav' AND password IS NULL").map_err(|e| e.to_string())?;
     let ids = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
     for id in ids {
         let id = id.map_err(|e| e.to_string())?;
@@ -101,8 +100,9 @@ pub(crate) fn remote_path_from_uri(uri: &str) -> Option<(String, String)> {
 pub(crate) fn list_sources(conn: &rusqlite::Connection) -> Result<Vec<RemoteSource>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, provider, base_url, username, password, root_path, enabled,
-                    last_sync_at, last_sync_error, created_at, updated_at
+            "SELECT id, name, provider, base_url, username, root_path, enabled,
+                    last_sync_at, last_sync_error, created_at, updated_at,
+                    (SELECT count(*) FROM navidrome_local_files m WHERE m.source_id=remote_sources.id AND m.root=remote_sources.root_path)
              FROM remote_sources
              ORDER BY created_at DESC",
         )
@@ -110,25 +110,24 @@ pub(crate) fn list_sources(conn: &rusqlite::Connection) -> Result<Vec<RemoteSour
 
     let rows = stmt
         .query_map([], |row| {
-            Ok(RemoteSourceCredentials {
+            Ok(RemoteSource {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 provider: row.get(2)?,
                 base_url: row.get(3)?,
                 username: row.get(4)?,
-                password: row.get(5)?,
-                root_path: row.get(6)?,
-                enabled: row.get::<_, i64>(7)? != 0,
-                last_sync_at: row.get(8)?,
-                last_sync_error: row.get(9)?,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-            }
-            .into())
+                root_path: row.get(5)?,
+                enabled: row.get::<_, i64>(6)? != 0,
+                last_sync_at: row.get(7)?,
+                last_sync_error: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                local_file_count: row.get(11)?,
+            })
         })
         .map_err(|error| error.to_string())?;
 
-    Ok(rows.filter_map(Result::ok).collect())
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 pub(crate) fn get_source(
@@ -195,17 +194,29 @@ pub(crate) fn get_source_for_remote_uri(
     Ok((source, remote_path, etag, Some(remote_uri)))
 }
 
+pub(super) fn saved_password(input: &RemoteSourceInput, saved: &RemoteSourceCredentials) -> Option<String> {
+    (saved.provider == input.provider && saved.base_url == input.base_url.trim().trim_end_matches('/')
+        && saved.username == input.username).then(|| saved.password.clone()).flatten()
+}
+
 pub(crate) fn save_source(
     conn: &rusqlite::Connection,
     input: RemoteSourceInput,
 ) -> Result<RemoteSource, String> {
-    if input.provider != "webdav" {
-        return Err("第一版仅支持 WebDAV".to_string());
+    if input.provider == "navidrome" {
+        super::navidrome::base_url(&input.base_url)?;
+    } else if input.provider != "webdav" {
+        return Err("未知远程曲库类型".to_string());
     }
 
     let now = now_seconds();
-    let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let root_path = normalize_root_path(input.root_path);
+    let id = input.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    let root_path = if input.provider == "navidrome" {
+        let root = input.root_path.as_deref().unwrap_or("/").trim();
+        if root.is_empty() || root == "/" { "/".to_owned() }
+        else if std::path::Path::new(root).is_absolute() { root.to_owned() }
+        else { return Err("本地缓存库需要使用绝对路径".into()); }
+    } else { normalize_root_path(input.root_path.clone()) };
     let name = input.name.trim();
     let base_url = input.base_url.trim().trim_end_matches('/');
     if name.is_empty() || base_url.is_empty() {
@@ -213,11 +224,20 @@ pub(crate) fn save_source(
     }
 
     let existing = get_source(conn, &id).ok();
-    let password = input
-        .password
-        .or_else(|| existing.as_ref().and_then(|source| source.password.clone()));
+    let password = input.password.clone()
+        .or_else(|| existing.as_ref().and_then(|source| saved_password(&input, source)));
+    if input.provider == "navidrome" && (input.username.as_deref().unwrap_or("").is_empty()
+        || password.as_deref().unwrap_or("").is_empty()) {
+        return Err("请输入 Navidrome 用户名和密码".into());
+    }
     let created_at = existing.map(|source| source.created_at).unwrap_or(now);
     let db_password = match password.as_deref() {
+        Some(password) if input.provider == "navidrome" => {
+            if !write_password_to_keyring_verified(&id, password) {
+                return Err("无法将 Navidrome 密码保存到 Windows 凭据管理器".into());
+            }
+            None
+        }
         Some(password) if !crate::data_storage::is_portable() && write_password_to_keyring_verified(&id, password) => None,
         Some(password) => Some(password.to_string()),
         None => None,
@@ -240,7 +260,7 @@ pub(crate) fn save_source(
         params![
             &id,
             name,
-            "webdav",
+            &input.provider,
             base_url,
             &input.username,
             &db_password,
@@ -258,6 +278,8 @@ pub(crate) fn remove_source(
     conn: &mut rusqlite::Connection,
     source_id: &str,
 ) -> Result<(), String> {
+    let provider: String = conn.query_row("SELECT provider FROM remote_sources WHERE id = ?1", [source_id], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     tx.execute("DELETE FROM songs WHERE remote_source_id = ?1", [source_id])
         .map_err(|error| error.to_string())?;
@@ -269,14 +291,17 @@ pub(crate) fn remove_source(
             source_id: source_id.to_string(),
         },
     )?;
-    delete_password_from_keyring(source_id);
     tx.execute(
         "DELETE FROM artists
          WHERE id NOT IN (SELECT DISTINCT artist_id FROM song_artists)",
         [],
     )
     .ok();
-    tx.commit().map_err(|error| error.to_string())
+    tx.commit().map_err(|error| error.to_string())?;
+    if provider == "navidrome" || !crate::data_storage::is_portable() {
+        delete_password_from_keyring(source_id);
+    }
+    Ok(())
 }
 
 pub(crate) fn replace_remote_files(
@@ -285,7 +310,7 @@ pub(crate) fn replace_remote_files(
     files: &[RemoteFileEntry],
 ) -> Result<(), String> {
     let now = now_seconds();
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let tx = conn.savepoint().map_err(|error| error.to_string())?;
     tx.execute("DELETE FROM remote_files WHERE source_id = ?1", [source_id])
         .map_err(|error| error.to_string())?;
     {

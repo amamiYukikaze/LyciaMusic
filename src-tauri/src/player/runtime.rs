@@ -474,7 +474,7 @@ impl RemoteRangeReader {
             .header(reqwest::header::RANGE, format!("bytes={start}-{end}"));
         let mut response = Self::auth(request, &self.source)
             .send()
-            .map_err(std::io::Error::other)?;
+            .map_err(|e| std::io::Error::other(e.without_url()))?;
         if !(response.status().is_success()
             || response.status() == reqwest::StatusCode::PARTIAL_CONTENT)
         {
@@ -484,7 +484,7 @@ impl RemoteRangeReader {
             )));
         }
         if response.status() == reqwest::StatusCode::OK && start > 0 {
-            return Err(std::io::Error::other("WebDAV 服务器不支持 Range 播放"));
+            return Err(std::io::Error::other("远程服务器不支持 Range 播放"));
         }
 
         let mut limited = response.by_ref().take(REMOTE_STREAM_CHUNK_BYTES);

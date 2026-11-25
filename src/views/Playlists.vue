@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useRoute, useRouter } from 'vue-router';
 import { Check, ChevronLeft, ChevronRight, LayoutGrid, List, ListChecks, ListMusic, ListPlus, LoaderCircle, MoreHorizontal, Pin, PinOff, Play, Plus, Trash2, X } from 'lucide-vue-next';
@@ -17,7 +17,9 @@ import { useHomeNavigation } from '../composables/useHomeNavigation';
 import { useListScrollMemory } from '../composables/useListScrollMemory';
 import { usePlaylistManagement } from '../composables/usePlaylistManagement';
 import { useToast } from '../composables/toast';
-import type { Playlist } from '../types';
+import NavidromePlaylists from '../components/playlists/NavidromePlaylists.vue';
+import { remoteLibraryApi } from '../services/tauri/remoteLibraryApi';
+import type { RemoteSource, Playlist } from '../types';
 import { usePlaylistImportDialog } from '../features/playlistImport/dialog';
 import { unresolvedCount } from '../features/playlistImport/types';
 
@@ -25,6 +27,15 @@ const { open: openPlaylistImport } = usePlaylistImportDialog();
 
 const router = useRouter();
 const route = useRoute();
+const servers = ref<RemoteSource[]>([]);
+onMounted(async () => {
+  try { servers.value = (await remoteLibraryApi.getRemoteSources()).filter(s => s.enabled && s.provider === 'navidrome'); }
+  catch { servers.value = []; }
+});
+const serverId = computed({
+  get: () => servers.value.find(s => s.id === route.query.server)?.id ?? '',
+  set: (id: string) => { void router.replace({ query: { ...route.query, server: id || undefined } }); },
+});
 const { openHomePlaylist } = useHomeNavigation(router);
 const library = usePlaylistLibraryStore();
 const { searchQuery, filter, viewMode, sortMode, visiblePlaylists } = storeToRefs(library);
@@ -142,7 +153,11 @@ const createFromModal = (name: string) => {
   <section class="playlist-page" aria-label="歌单资料库">
     <header class="page-header">
       <h1>我的歌单</h1>
-      <div class="header-actions">
+      <select v-if="servers.length" v-model="serverId" aria-label="歌单来源" class="button button-secondary">
+        <option value="">本地歌单</option>
+        <option v-for="server in servers" :key="server.id" :value="server.id">{{ server.name }}</option>
+      </select>
+      <div v-if="!serverId" class="header-actions">
         <PlaylistSortControl />
         <div class="view-switch" role="group" aria-label="歌单显示方式"><button type="button" title="网格视图" aria-label="网格视图" :aria-pressed="viewMode === 'grid'" :class="{ active: viewMode === 'grid' }" @click="viewMode = 'grid'"><LayoutGrid :size="16" /></button><button type="button" title="列表视图" aria-label="列表视图" :aria-pressed="viewMode === 'list'" :class="{ active: viewMode === 'list' }" @click="viewMode = 'list'"><List :size="17" /></button></div>
         <button type="button" class="button button-secondary header-icon-button" title="导入外部歌单" aria-label="导入外部歌单" @click="openPlaylistImport()"><ListPlus :size="16" /></button>
@@ -151,6 +166,8 @@ const createFromModal = (name: string) => {
       </div>
     </header>
 
+    <NavidromePlaylists v-if="serverId" :source-id="serverId" />
+    <template v-else>
     <div v-if="isManaging" class="selection-toolbar">
       <div class="selection-summary"><AppCheckbox :checked="allVisibleSelected" :indeterminate="selectedIds.size > 0 && !allVisibleSelected" :disabled="!pagedPlaylists.length" aria-label="选择本页全部歌单" @change="toggleSelectAll" /><button type="button" @click="toggleSelectAll">本页全选</button><span aria-live="polite">已选 {{ selectedIds.size }} 个</span></div>
       <div class="selection-actions"><button type="button" :disabled="!selectedIds.size" @click="pinSelection"><component :is="allSelectedPinned ? PinOff : Pin" :size="14" />{{ allSelectedPinned ? '取消置顶' : '置顶' }}</button><button type="button" :disabled="!selectedIds.size" @click="addSelectionToQueue"><ListPlus :size="15" />加入队列</button><button type="button" class="danger" :disabled="!selectedIds.size" @click="requestDelete([...selectedIds])"><Trash2 :size="14" />删除</button><button type="button" aria-label="退出批量管理" @click="exitManagement"><X :size="16" /></button></div>
@@ -188,6 +205,7 @@ const createFromModal = (name: string) => {
     <PlaylistActionsMenu v-if="menuPlaylist" :key="menuPlaylist.id" :x="menuPosition.x" :y="menuPosition.y" :name="menuPlaylist.name" :pinned="library.isPinned(menuPlaylist.id)" :empty="!menuPlaylist.songPaths.length" @close="closeMenu" @action="handleMenuAction" />
     <ModernInputModal v-model:visible="showNameModal" :title="renameId ? '重命名歌单' : '新建歌单'" :initial-value="initialName" placeholder="为这张歌单取个名字" :confirm-text="renameId ? '保存' : '创建'" @confirm="createFromModal" />
     <ModernModal v-model:visible="showDeleteModal" title="确定删除歌单？" :content="deleteMessage" type="danger" confirm-text="删除歌单" @confirm="confirmDelete" />
+    </template>
   </section>
 </template>
 

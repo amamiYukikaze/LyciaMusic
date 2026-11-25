@@ -213,9 +213,10 @@ export interface LibraryScanSettings {
   excludedDirectories: string[];
 }
 
-export type RemoteSourceProvider = 'webdav';
+export type RemoteSourceProvider = 'webdav' | 'navidrome';
 
 export interface RemoteSource {
+  localFileCount?: number;
   id: string;
   name: string;
   provider: RemoteSourceProvider;
@@ -245,6 +246,7 @@ export interface RemoteConnectionResult {
 }
 
 export interface RemoteSyncResult {
+  localFiles?: number;
   sourceId: string;
   indexedFiles: number;
   audioFiles: number;

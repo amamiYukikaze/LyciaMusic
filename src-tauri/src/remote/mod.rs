@@ -1,4 +1,6 @@
 pub(crate) mod cache;
+mod navidrome;
+mod local_library;
 pub(crate) mod commands;
 pub(crate) mod repository;
 pub(crate) mod scanner;

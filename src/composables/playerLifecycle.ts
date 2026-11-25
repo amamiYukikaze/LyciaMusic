@@ -60,6 +60,7 @@ interface CreatePlayerLifecycleDeps {
   handlePlaybackError: (payload: PlaybackErrorPayload) => void;
   handlePlaybackFinished: (payload: PlaybackFinishedPayload) => void;
   handlePlaybackStarted?: (payload: PlaybackStartedPayload) => void;
+  enablePersistence?: () => void;
   schedulePersistedState: () => void;
   flushPersistedState: () => void;
   restorePathBackedState: () => Promise<void>;
@@ -194,6 +195,7 @@ export const createPlayerLifecycle = ({
   handlePlaybackError,
   handlePlaybackFinished,
   handlePlaybackStarted,
+  enablePersistence,
   schedulePersistedState,
   flushPersistedState,
   restorePathBackedState,
@@ -513,7 +515,7 @@ export const createPlayerLifecycle = ({
           if (!source.enabled) continue;
           const key = `${remoteAutoSyncKey}:${source.id}`;
           const lastSyncAt = Number(localStorage.getItem(key) || '0');
-          if (Date.now() - lastSyncAt < remoteAutoSyncIntervalMs) continue;
+          if (source.lastSyncAt && Date.now() - lastSyncAt < remoteAutoSyncIntervalMs) continue;
           await remoteLibraryApi.syncRemoteSource(source.id);
           localStorage.setItem(key, String(Date.now()));
         }
@@ -581,6 +583,7 @@ export const createPlayerLifecycle = ({
     };
 
     onMounted(async () => {
+      collectionsStore.setPlaylists(playerStorage.readPlaylists());
       const storedVolume = playerStorage.readNumber(playerStorageKeys.volume);
       if (storedVolume !== null) {
         volume.value = storedVolume;
@@ -602,7 +605,6 @@ export const createPlayerLifecycle = ({
         playerStorage.readStringArray(playerStorageKeys.favorites) ?? [],
       );
 
-      collectionsStore.setPlaylists(playerStorage.readPlaylists());
 
       restoreSortSettings({
         artistSortMode,
@@ -633,6 +635,7 @@ export const createPlayerLifecycle = ({
         currentTime.value = storedLastTime;
       }
       playbackStateRestored = true;
+      enablePersistence?.();
 
       window.addEventListener('beforeunload', beforeUnloadHandler);
       document.addEventListener('visibilitychange', visibilityChangeHandler);

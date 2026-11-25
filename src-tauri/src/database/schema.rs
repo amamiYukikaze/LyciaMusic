@@ -101,6 +101,15 @@ pub(crate) fn ensure_base_schema(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS navidrome_local_files (
+        source_id TEXT NOT NULL REFERENCES remote_sources(id) ON DELETE CASCADE,
+        root TEXT NOT NULL, uri TEXT PRIMARY KEY, path TEXT NOT NULL, size INTEGER NOT NULL, modified INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS navidrome_playlists (
+        source_id TEXT NOT NULL REFERENCES remote_sources(id) ON DELETE CASCADE,
+        path TEXT NOT NULL, entries TEXT NOT NULL, PRIMARY KEY(source_id,path)
+    );").map_err(|e|e.to_string())?;
+
     conn.execute(
         "CREATE TABLE IF NOT EXISTS artists (
             id INTEGER PRIMARY KEY,

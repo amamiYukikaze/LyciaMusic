@@ -14,6 +14,7 @@ pub(crate) struct RemoteSource {
     pub last_sync_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub local_file_count: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +47,7 @@ impl From<RemoteSourceCredentials> for RemoteSource {
             last_sync_error: value.last_sync_error,
             created_at: value.created_at,
             updated_at: value.updated_at,
+            local_file_count: 0,
         }
     }
 }
@@ -76,6 +78,7 @@ pub(crate) struct RemoteSyncResult {
     pub indexed_files: usize,
     pub audio_files: usize,
     pub parsed_songs: usize,
+    pub local_files: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -102,7 +105,7 @@ pub(crate) struct RemoteSyncProgress {
     pub failed: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RemoteFileEntry {
     pub remote_path: String,

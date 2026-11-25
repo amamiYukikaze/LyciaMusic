@@ -18,8 +18,10 @@ fn now_seconds() -> i64 {
 }
 
 fn input_to_credentials(input: RemoteSourceInput) -> Result<RemoteSourceCredentials, String> {
-    if input.provider != "webdav" {
-        return Err("第一版仅支持 WebDAV".to_string());
+    if input.provider == "navidrome" {
+        super::navidrome::base_url(&input.base_url)?;
+    } else if input.provider != "webdav" {
+        return Err("未知远程曲库类型".to_string());
     }
     let now = now_seconds();
     Ok(RemoteSourceCredentials {
@@ -48,10 +50,23 @@ pub(crate) async fn get_remote_sources(
 
 #[tauri::command]
 pub(crate) async fn test_remote_source(
-    source: RemoteSourceInput,
+    mut source: RemoteSourceInput,
+    db_state: State<'_, DbState>,
 ) -> Result<RemoteConnectionResult, String> {
+    if source.password.is_none() {
+        if let Some(id) = &source.id {
+            let conn = db_state.conn.lock().map_err(|error| error.to_string())?;
+            let stored = get_source(&conn, id)?;
+            source.password = super::repository::saved_password(&source, &stored);
+        }
+    }
     let credentials = input_to_credentials(source)?;
-    match webdav::test_connection(&credentials).await {
+    let result = if credentials.provider == "navidrome" {
+        super::navidrome::ping(&credentials).await
+    } else {
+        webdav::test_connection(&credentials).await
+    };
+    match result {
         Ok(()) => Ok(RemoteConnectionResult {
             ok: true,
             message: "连接成功".to_string(),
@@ -144,12 +159,22 @@ pub(crate) async fn list_remote_directory(
             if source.password.is_none() {
                 if let Some(source_id) = source.id.as_deref() {
                     let conn = db_state.conn.lock().map_err(|error| error.to_string())?;
-                    source.password = get_source(&conn, source_id)?.password;
+                    source.password =
+                        super::repository::saved_password(&source, &get_source(&conn, source_id)?);
                 }
             }
             input_to_credentials(source)?
         }
         _ => return Err("请选择一个远程音乐源".to_string()),
     };
+    if source.provider == "navidrome" {
+        {
+            let conn = db_state.conn.lock().map_err(|e| e.to_string())?;
+            if let Some(rows) = super::navidrome::cached_playlist(&conn, &source.id, &path)? {
+                return Ok(rows);
+            }
+        }
+        return super::navidrome::browse(&source, &path).await;
+    }
     webdav::list_directory(webdav::shared_client(), &source, &path).await
 }

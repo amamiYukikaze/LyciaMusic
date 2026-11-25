@@ -4,12 +4,19 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useToast } from '../../composables/toast';
 import { remoteLibraryApi } from '../../services/tauri/remoteLibraryApi';
 import { libraryApi } from '../../services/tauri/libraryApi';
-import type { LibraryScanSettings, RemoteCacheUsage, RemoteFileEntry, RemoteSource, RemoteSyncProgress } from '../../types';
+import type { LibraryScanSettings, RemoteCacheUsage, RemoteFileEntry, RemoteSource, RemoteSourceProvider, RemoteSyncProgress } from '../../types';
 import { useLibraryRuntimeActions } from '../../features/library/useLibraryRuntimeActions';
+import { open } from '@tauri-apps/plugin-dialog';
+import { useRouter } from 'vue-router';
 import ConfirmModal from '../overlays/ConfirmModal.vue';
 import LibraryScanOptions from './LibraryScanOptions.vue';
 import { copyLibraryScanSettings, defaultLibraryScanSettings, hasLibraryScanFormats, normalizeScanDirectory, scanSettingsEqual } from './libraryScanOptions';
 
+const router = useRouter();
+const chooseLocalLibrary = async () => {
+  const path = await open({ directory: true, multiple: false, title: '选择本地音频缓存库' });
+  if (typeof path === 'string') form.rootPath = path;
+};
 const { showToast } = useToast();
 const { loadLibrarySongsFromCache } = useLibraryRuntimeActions();
 const remoteSources = ref<RemoteSource[]>([]);
@@ -38,6 +45,7 @@ let unlistenRemoteSync: UnlistenFn | null = null;
 
 const form = reactive({
   id: '',
+  provider: 'webdav' as RemoteSourceProvider,
   name: '',
   baseUrl: '',
   username: '',
@@ -45,8 +53,11 @@ const form = reactive({
   rootPath: '/',
 });
 
+watch(() => form.provider, () => { if (!form.id) form.rootPath = '/'; });
+
 const resetForm = () => {
   form.id = '';
+  form.provider = 'webdav';
   form.name = '';
   form.baseUrl = '';
   form.username = '';
@@ -77,7 +88,7 @@ const closeForm = () => {
 const buildPayload = () => ({
   id: form.id || undefined,
   name: form.name.trim(),
-  provider: 'webdav' as const,
+  provider: form.provider,
   baseUrl: form.baseUrl.trim(),
   username: form.username.trim() || null,
   password: form.password || null,
@@ -151,6 +162,10 @@ const clearRemoteCache = async () => {
 };
 
 const browseSource = async (source: RemoteSource, path = '/') => {
+  if (source.provider === 'navidrome') {
+    await router.push({name: 'Playlists', query: { server: source.id }});
+    return;
+  }
   browsingSourceId.value = source.id;
   browsingPath.value = path;
   isBrowsing.value = true;
@@ -186,7 +201,7 @@ const testConnection = async () => {
 };
 
 const saveSource = async () => {
-  if (formLocked.value || scanSettingsLoadFailed.value || !hasLibraryScanFormats(scanSettingsDraft.value, 'remote')) return;
+  if (formLocked.value || scanSettingsLoadFailed.value || (form.provider === 'webdav' && !hasLibraryScanFormats(scanSettingsDraft.value, 'remote'))) return;
   if (!form.name.trim() || !form.baseUrl.trim()) {
     showToast('名称和服务器地址不能为空', 'error');
     return;
@@ -224,6 +239,7 @@ const editSource = async (source: RemoteSource) => {
   if (isSaving.value || syncingSourceId.value === source.id) return;
   resetForm();
   form.id = source.id;
+  form.provider = source.provider;
   form.name = source.name;
   form.baseUrl = source.baseUrl;
   form.username = source.username ?? '';
@@ -263,7 +279,8 @@ const syncSource = async (source: RemoteSource) => {
     const result = await remoteLibraryApi.syncRemoteSource(source.id);
     await loadLibrarySongsFromCache();
     await loadSources();
-    showToast(`已同步 ${result.audioFiles} 首远程歌曲`, 'success');
+    const local = source.provider === 'navidrome' && source.rootPath !== '/' ? `，${result.localFiles ?? 0} 首可从本地播放` : '';
+    showToast(`已同步 ${result.audioFiles} 首远程歌曲${local}`, 'success');
     return true;
   } catch (error) {
     console.error('Failed to sync remote source:', error);
@@ -321,7 +338,7 @@ onScopeDispose(() => {
           @click="openAddForm"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-          添加 WebDAV 音乐库
+          添加远程音乐库
         </button>
       </section>
 
@@ -338,7 +355,10 @@ onScopeDispose(() => {
             <div v-for="source in remoteSources" :key="source.id" class="remote-source-row">
               <div class="min-w-0 flex-1">
                 <div class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ source.name }}</div>
-                <div class="mt-1 truncate text-xs text-gray-600 dark:text-white/55">{{ source.baseUrl }}{{ source.rootPath }}</div>
+                <div class="mt-1 truncate text-xs text-gray-600 dark:text-white/55">{{ source.baseUrl }}{{ source.provider === 'webdav' ? source.rootPath : '' }}</div>
+                <div v-if="source.provider === 'navidrome' && source.rootPath !== '/'" class="mt-1 truncate text-xs" :title="source.rootPath">
+                  本地缓存库 · {{ source.localFileCount ?? 0 }} 首 · {{ source.rootPath }}
+                </div>
                 <div v-if="source.lastSyncError" class="mt-1 text-xs text-[#EC4141]">{{ source.lastSyncError }}</div>
                 <div v-if="syncProgress?.sourceId === source.id && !syncProgress.done" class="remote-progress">
                   <div class="remote-progress__top">
@@ -364,7 +384,7 @@ onScopeDispose(() => {
                   {{ syncingSourceId === source.id ? '同步中' : '同步' }}
                 </button>
                 <button type="button" class="remote-icon-action" title="浏览" @click="browseSource(source)">
-                  浏览
+                  {{ source.provider === 'navidrome' ? '服务器歌单' : '浏览' }}
                 </button>
                 <button type="button" class="remote-icon-action remote-icon-action--danger" title="删除" @click="sourceToRemove = source">
                   删除
@@ -424,19 +444,26 @@ onScopeDispose(() => {
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
           </button>
           <h2 class="text-sm font-bold text-gray-800 dark:text-gray-200">
-            {{ form.id ? '编辑 WebDAV 音乐库' : '添加 WebDAV 音乐库' }}
+            {{ form.id ? '编辑远程音乐库' : '添加远程音乐库' }}
           </h2>
         </div>
 
         <div class="remote-panel">
           <fieldset class="remote-form-grid" :disabled="formLocked">
             <label class="remote-field">
+              <span>服务类型</span>
+              <select v-model="form.provider" class="remote-input" :disabled="!!form.id">
+                <option value="webdav">WebDAV</option>
+                <option value="navidrome">Navidrome</option>
+              </select>
+            </label>
+            <label class="remote-field">
               <span>名称</span>
-              <input v-model="form.name" type="text" class="remote-input" placeholder="我的 WebDAV" />
+              <input v-model="form.name" type="text" class="remote-input" placeholder="我的音乐库" />
             </label>
             <label class="remote-field">
               <span>服务器地址</span>
-              <input v-model="form.baseUrl" type="url" class="remote-input" placeholder="https://example.com/dav" />
+              <input v-model="form.baseUrl" type="url" class="remote-input" :placeholder="form.provider === 'navidrome' ? 'https://music.example.com' : 'https://example.com/dav'" />
             </label>
             <label class="remote-field">
               <span>用户名</span>
@@ -446,15 +473,22 @@ onScopeDispose(() => {
               <span>密码</span>
               <input v-model="form.password" type="password" class="remote-input" autocomplete="current-password" />
             </label>
-            <label class="remote-field">
+            <label v-if="form.provider === 'webdav'" class="remote-field">
               <span>根目录</span>
               <input v-model="form.rootPath" type="text" class="remote-input" placeholder="/" />
+            </label>
+            <label v-if="form.provider === 'navidrome'" class="remote-field">
+              <span>本地音频缓存库</span>
+              <div class="flex items-center gap-2">
+                <input class="remote-input min-w-0 flex-1" :value="form.rootPath === '/' ? '' : form.rootPath" placeholder="可选，留空时从服务器播放" @input="form.rootPath = ($event.target as HTMLInputElement).value" />
+                <button type="button" class="remote-icon-action" @click="chooseLocalLibrary">选择目录</button>
+              </div>
             </label>
           </fieldset>
 
           <div class="remote-scan-options">
             <div v-if="scanSettingsLoading" class="remote-empty" role="status">加载扫描设置中…</div>
-            <LibraryScanOptions v-else-if="!scanSettingsLoadFailed" v-model="scanSettingsDraft" :source="{ kind: 'remote', sourceId: form.id }" root-path="/" :remote-source-input="buildPayload()" :disabled="isSaving || testing" />
+            <LibraryScanOptions v-else-if="form.provider === 'webdav' && !scanSettingsLoadFailed" v-model="scanSettingsDraft" :source="{ kind: 'remote', sourceId: form.id }" root-path="/" :remote-source-input="buildPayload()" :disabled="isSaving || testing" />
             <p v-if="scanSettingsError" class="remote-form-error" role="alert">{{ scanSettingsError }}</p>
           </div>
 
@@ -465,7 +499,7 @@ onScopeDispose(() => {
             <button type="button" class="remote-action remote-action--soft" :disabled="formLocked" @click="testConnection">
               {{ testing ? '测试中...' : '测试连接' }}
             </button>
-            <button type="button" class="remote-action" :disabled="formLocked || scanSettingsLoadFailed || !hasLibraryScanFormats(scanSettingsDraft, 'remote')" @click="saveSource">
+            <button type="button" class="remote-action" :disabled="formLocked || scanSettingsLoadFailed || (form.provider === 'webdav' && !hasLibraryScanFormats(scanSettingsDraft, 'remote'))" @click="saveSource">
               {{ isSaving ? '处理中…' : formNeedsSync ? '保存并同步' : '保存' }}
             </button>
           </div>

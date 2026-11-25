@@ -745,6 +745,7 @@ async fn read_remote_song_lyrics_source(path: &str, db_state: &DbState) -> SongL
     let Some((source, remote_path, _etag, _stored_remote_uri)) = lookup else {
         return SongLyricsSource::default();
     };
+    if source.provider == "navidrome" { return SongLyricsSource::default(); }
     let Some(lrc_path) = remote_sidecar_lrc_path(&remote_path) else {
         return SongLyricsSource::default();
     };

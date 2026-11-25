@@ -106,7 +106,10 @@ fn apply_filename_metadata_fallback(song: &mut Song, file: &RemoteFileEntry) {
     }
 }
 
-fn song_from_remote_file(source: &RemoteSourceCredentials, file: &RemoteFileEntry) -> Song {
+pub(super) fn song_from_remote_file(
+    source: &RemoteSourceCredentials,
+    file: &RemoteFileEntry,
+) -> Song {
     let remote_uri = file.remote_uri(&source.id);
     let title = title_from_name(&file.name);
     let artist = "未知歌手".to_string();
@@ -455,6 +458,7 @@ fn mark_remote_songs(
              SET source_type = 'remote',
                  remote_source_id = ?1,
                  remote_uri = ?2,
+                 cache_path = CASE WHEN remote_etag IS ?3 THEN cache_path ELSE NULL END,
                  remote_etag = ?3
              WHERE path = ?2",
         )
@@ -469,11 +473,11 @@ fn mark_remote_songs(
     Ok(())
 }
 
-pub(crate) async fn sync_source(
-    app: AppHandle,
-    db_conn: Arc<Mutex<rusqlite::Connection>>,
-    source: RemoteSourceCredentials,
-) -> Result<RemoteSyncResult, String> {
+async fn scan_webdav(
+    app: &AppHandle,
+    db_conn: &Mutex<rusqlite::Connection>,
+    source: &RemoteSourceCredentials,
+) -> Result<(Vec<RemoteFileEntry>, Vec<Song>, Vec<(String, String)>), String> {
     let settings = {
         let conn = db_conn.lock().map_err(|error| error.to_string())?;
         load_settings(
@@ -483,45 +487,18 @@ pub(crate) async fn sync_source(
             },
         )?
     };
-    emit_sync_progress(
-        &app,
-        &source.id,
-        "scanning",
-        0,
-        0,
-        "正在读取远程目录",
-        false,
-        false,
-    );
-    let files = match webdav::collect_audio_files(&source, &settings).await {
-        Ok(files) => files,
-        Err(error) => {
-            if let Ok(conn) = db_conn.lock() {
-                let _ = update_sync_status(&conn, &source.id, Some(&error));
-            }
-            emit_sync_progress(&app, &source.id, "error", 0, 0, error.clone(), true, true);
-            return Err(error);
-        }
-    };
+    let files = webdav::collect_audio_files(source, &settings).await?;
     let snapshots = {
         let conn = db_conn.lock().map_err(|error| error.to_string())?;
-        match load_remote_song_snapshots(&conn, &source.id) {
-            Ok(snapshots) => snapshots,
-            Err(error) => {
-                let _ = update_sync_status(&conn, &source.id, Some(&error));
-                emit_sync_progress(&app, &source.id, "error", 0, 0, error.clone(), true, true);
-                return Err(error);
-            }
-        }
+        load_remote_song_snapshots(&conn, &source.id)?
     };
-
     let mut songs = Vec::with_capacity(files.len());
     let mut cache_updates = Vec::new();
     let total = files.len();
     for (index, file) in files.iter().enumerate() {
         let current = index + 1;
         emit_sync_progress(
-            &app,
+            app,
             &source.id,
             "parsing",
             current,
@@ -539,13 +516,88 @@ pub(crate) async fn sync_source(
                 }
             }
         }
-        let (song, cache_path) = cache_and_parse_remote_song(&app, &source, file).await;
+        let (song, cache_path) = cache_and_parse_remote_song(app, source, file).await;
         if let Some(cache_path) = cache_path {
             cache_updates.push((remote_uri, cache_path));
         }
         songs.push(song);
     }
 
+    Ok((files, songs, cache_updates))
+}
+
+struct SyncInProgress(String);
+static SYNCING: std::sync::LazyLock<Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+impl SyncInProgress {
+    fn start(id: &str) -> Result<Self, String> {
+        if !SYNCING
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(id.to_owned())
+        {
+            return Err("这座远程曲库正在同步".into());
+        }
+        Ok(Self(id.to_owned()))
+    }
+}
+impl Drop for SyncInProgress {
+    fn drop(&mut self) {
+        if let Ok(mut ids) = SYNCING.lock() {
+            ids.remove(&self.0);
+        }
+    }
+}
+
+pub(crate) async fn sync_source(
+    app: AppHandle,
+    db_conn: Arc<Mutex<rusqlite::Connection>>,
+    source: RemoteSourceCredentials,
+) -> Result<RemoteSyncResult, String> {
+    let _sync = SyncInProgress::start(&source.id)?;
+    emit_sync_progress(
+        &app,
+        &source.id,
+        "scanning",
+        0,
+        0,
+        "正在读取远程目录",
+        false,
+        false,
+    );
+    let result = if source.provider == "navidrome" {
+        async {
+            let (files, songs) = super::navidrome::catalog(&source).await?;
+            emit_sync_progress(
+                &app,
+                &source.id,
+                "scanning",
+                0,
+                0,
+                "正在同步服务器歌单并匹配本地音频",
+                false,
+                false,
+            );
+            let offline = super::navidrome::OfflineLibrary::load(&source, &files).await?;
+            Ok((files, songs, Vec::new(), Some(offline)))
+        }
+        .await
+    } else {
+        scan_webdav(&app, &db_conn, &source)
+            .await
+            .map(|(files, songs, updates)| (files, songs, updates, None))
+    };
+    let (files, songs, cache_updates, offline) = match result {
+        Ok(index) => index,
+        Err(error) => {
+            if let Ok(conn) = db_conn.lock() {
+                let _ = update_sync_status(&conn, &source.id, Some(&error));
+            }
+            emit_sync_progress(&app, &source.id, "error", 0, 0, error.clone(), true, true);
+            return Err(error);
+        }
+    };
+    let total = files.len();
     emit_sync_progress(
         &app,
         &source.id,
@@ -558,23 +610,44 @@ pub(crate) async fn sync_source(
     );
     let write_result = (|| -> Result<(), String> {
         let mut conn = db_conn.lock().map_err(|error| error.to_string())?;
-        let next_paths = songs
-            .iter()
-            .map(|song| song.path.clone())
-            .collect::<HashSet<_>>();
-        let to_delete = existing_remote_song_paths(&conn, &source.id)?
-            .into_iter()
-            .filter(|path| !next_paths.contains(path))
-            .collect::<Vec<_>>();
+        conn.execute_batch("SAVEPOINT remote_sync")
+            .map_err(|e| e.to_string())?;
+        let write = (|| {
+            let saved = super::repository::get_source(&conn, &source.id)?;
+            if saved.base_url != source.base_url
+                || saved.username != source.username
+                || saved.root_path != source.root_path
+            {
+                return Err("同步期间音乐源已更改，请重试".into());
+            }
+            let next_paths = songs
+                .iter()
+                .map(|song| song.path.clone())
+                .collect::<HashSet<_>>();
+            let to_delete = existing_remote_song_paths(&conn, &source.id)?
+                .into_iter()
+                .filter(|path| !next_paths.contains(path))
+                .collect::<Vec<_>>();
 
-        replace_remote_files(&mut conn, &source.id, &files)?;
-        apply_scan_changes(&mut conn, &songs, &[], &to_delete, None)?;
-        mark_remote_songs(&conn, &source, &files)?;
-        for (remote_uri, cache_path) in &cache_updates {
-            update_song_cache_path(&conn, remote_uri, cache_path)?;
+            replace_remote_files(&mut conn, &source.id, &files)?;
+            apply_scan_changes(&mut conn, &songs, &[], &to_delete, None)?;
+            mark_remote_songs(&conn, &source, &files)?;
+            for (remote_uri, cache_path) in &cache_updates {
+                update_song_cache_path(&conn, remote_uri, cache_path)?;
+            }
+            if let Some(snapshot) = &offline {
+                snapshot.save(&conn, &source)?;
+            }
+            update_sync_status(&conn, &source.id, None)?;
+            Ok(())
+        })();
+        if let Err(error) = write {
+            conn.execute_batch("ROLLBACK TO remote_sync; RELEASE remote_sync")
+                .map_err(|e| e.to_string())?;
+            return Err(error);
         }
-        update_sync_status(&conn, &source.id, None)?;
-        Ok(())
+        conn.execute_batch("RELEASE remote_sync")
+            .map_err(|e| e.to_string())
     })();
 
     if let Err(error) = write_result {
@@ -609,6 +682,7 @@ pub(crate) async fn sync_source(
         indexed_files: files.len(),
         audio_files: files.len(),
         parsed_songs: songs.len(),
+        local_files: offline.as_ref().map_or(0, |s| s.local_files.len()),
     })
 }
 

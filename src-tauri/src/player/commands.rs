@@ -230,6 +230,7 @@ fn update_cached_remote_audio_metadata(
         let conn = db_state.conn.lock().ok()?;
         get_source_for_remote_uri(&conn, remote_uri).ok()?
     };
+    if source.provider == "navidrome" { return None; }
     let normalized_uri = stored_remote_uri.unwrap_or_else(|| remote_uri.to_string());
     let file_size = std::fs::metadata(cache_path)
         .map(|metadata| metadata.len())

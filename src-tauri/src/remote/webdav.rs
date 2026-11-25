@@ -445,14 +445,27 @@ pub(crate) async fn download_file_to_path(
         .await
         .map(|metadata| metadata.len())
         .unwrap_or(0);
-    let mut request = client.get(build_url(source, remote_path));
+    let mut request = if source.provider == "navidrome" {
+        client.get(super::navidrome::stream_url(source, remote_path)?)
+    } else {
+        auth_request(client.get(build_url(source, remote_path)), source)
+    };
     if existing_bytes > 0 {
         request = request.header(RANGE, format!("bytes={existing_bytes}-"));
     }
-    let mut response = auth_request(request, source)
+    let mut response = request
         .send()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.without_url().to_string())?;
+    if source.provider == "navidrome"
+        && response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("json") || v.contains("xml") || v.contains("html"))
+    {
+        return Err("Navidrome 未返回音频".into());
+    }
     if !response.status().is_success() {
         return Err(format!("远程文件下载失败：{}", response.status()));
     }
@@ -479,7 +492,11 @@ pub(crate) async fn download_file_to_path(
             .await
             .map_err(|error| error.to_string())?,
     };
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| error.without_url().to_string())?
+    {
         downloaded = downloaded.saturating_add(chunk.len() as u64);
         file.write_all(&chunk)
             .await

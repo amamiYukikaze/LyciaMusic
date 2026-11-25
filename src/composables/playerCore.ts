@@ -568,6 +568,7 @@ function createPlayerCore() {
   });
 
   const {
+    enablePersistence,
     flushPersistedState,
     schedulePersistedState,
     dispose: disposePlayerPersistence,
@@ -595,6 +596,7 @@ function createPlayerCore() {
     handlePlaybackStarted: payload => playerPlayback.handlePlaybackStarted(payload),
     schedulePersistedState,
     flushPersistedState,
+    enablePersistence,
     restorePathBackedState,
     restoreRecentHistory,
     refreshStateSongReferences,
