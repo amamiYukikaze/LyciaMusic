@@ -321,7 +321,7 @@ fn load_cached_songs(
     let mut stmt = conn
         .prepare(
             "SELECT path, title, artist, artist_names, effective_artist_names, album, album_artist, album_key, is_various_artists_album, collapse_artist_credits, duration, cover_thumb_path, bitrate, sample_rate, bit_depth, format, track_number, disc_number, added_at, file_modified_at, source_type
-             FROM songs",
+             FROM catalog_songs AS songs",
         )
         .map_err(|e| e.to_string())?;
 
@@ -345,6 +345,8 @@ fn load_cached_songs(
     Ok(songs)
 }
 
+// This is the membership index for playlists, favorites and existing queues.
+// It must include aliases omitted from the combined catalog.
 fn load_cached_song_paths(conn: &rusqlite::Connection) -> Result<Vec<String>, String> {
     let mut statement = conn
         .prepare("SELECT path FROM songs")
@@ -525,7 +527,7 @@ const ALBUM_CATALOG_SQL: &str = "WITH normalized_songs AS (
                         COALESCE(NULLIF(TRIM(album_key), ''), '') AS album_key,
                         COALESCE(NULLIF(TRIM(album), ''), 'Unknown') AS album_name,
                         COALESCE(NULLIF(TRIM(album_artist), ''), NULLIF(TRIM(artist), ''), 'Unknown') AS album_artist_name
-                    FROM songs
+                    FROM catalog_songs AS songs
                  ),
                  ranked_songs AS (
                     SELECT
@@ -681,7 +683,7 @@ fn load_album_catalog_with_folder_collections(
                 COALESCE(NULLIF(TRIM(album_key), ''), ''),
                 COALESCE(NULLIF(TRIM(album), ''), 'Unknown'),
                 COALESCE(NULLIF(TRIM(album_artist), ''), NULLIF(TRIM(artist), ''), 'Unknown')
-         FROM songs ORDER BY added_at DESC, id ASC",
+         FROM catalog_songs AS songs ORDER BY added_at DESC, id ASC",
         )
         .map_err(|error| error.to_string())?;
     let mut rows = stmt.query([]).map_err(|error| error.to_string())?;
@@ -901,7 +903,7 @@ pub async fn get_library_artist_catalog(
                         COALESCE((
                             SELECT songs.path
                             FROM song_artists AS nested_song_artists
-                            JOIN songs ON songs.id = nested_song_artists.song_id
+                            JOIN catalog_songs AS songs ON songs.id = nested_song_artists.song_id
                             WHERE nested_song_artists.artist_id = artists.id
                             ORDER BY songs.added_at DESC, songs.id ASC
                             LIMIT 1
@@ -909,6 +911,7 @@ pub async fn get_library_artist_catalog(
                         artists.avatar_path
                  FROM artists
                  JOIN song_artists ON song_artists.artist_id = artists.id
+                 JOIN catalog_songs ON catalog_songs.id = song_artists.song_id
                  GROUP BY artists.id, artists.name
                  ORDER BY artists.name COLLATE NOCASE ASC",
             )
@@ -972,7 +975,7 @@ pub async fn get_library_album_catalog_by_artist(
                     COALESCE(NULLIF(TRIM(songs.album_key), ''), '') AS album_key,
                     COALESCE(NULLIF(TRIM(songs.album), ''), 'Unknown') AS album_name,
                     COALESCE(NULLIF(TRIM(songs.album_artist), ''), NULLIF(TRIM(songs.artist), ''), 'Unknown') AS album_artist_name
-                FROM songs
+                FROM catalog_songs AS songs
                 WHERE {}
              ), ranked_songs AS (
                 SELECT album_key, album_name, album_artist_name, path,
@@ -1029,7 +1032,7 @@ pub async fn get_library_song_paths_by_artist(
         let conn = db_conn.lock().map_err(|e| e.to_string())?;
         let sql = format!(
             "SELECT songs.path
-             FROM songs
+             FROM catalog_songs AS songs
              WHERE {}
              ORDER BY COALESCE(NULLIF(TRIM(songs.title), ''), songs.path) COLLATE NOCASE ASC",
             artist_song_predicate(album_artist.unwrap_or(false)),
@@ -1134,7 +1137,7 @@ pub async fn get_library_genre_catalog(
         let conn = db_conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT {GENRE_SONG_COLUMNS} FROM songs
+                "SELECT {GENRE_SONG_COLUMNS} FROM catalog_songs AS songs
                  WHERE songs.genre IS NOT NULL AND TRIM(songs.genre) <> ''"
             ))
             .map_err(|e| e.to_string())?;
@@ -1216,7 +1219,7 @@ pub async fn get_library_song_paths_by_genre(
         let (search_predicate, params) =
             build_song_search_predicate("songs", query.as_deref(), search_index_is_complete(&conn));
         let sql = format!(
-            "SELECT songs.path FROM songs WHERE lycia_has_genre(songs.genre){search_predicate}{}",
+            "SELECT songs.path FROM catalog_songs AS songs WHERE lycia_has_genre(songs.genre){search_predicate}{}",
             all_view_page_order(&sort_mode),
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1249,7 +1252,7 @@ pub async fn get_library_genre_groups(
         let (search_predicate, params) =
             build_song_search_predicate("songs", query.as_deref(), search_index_is_complete(&conn));
         let sql = format!(
-            "SELECT {GENRE_SONG_COLUMNS} FROM songs
+            "SELECT {GENRE_SONG_COLUMNS} FROM catalog_songs AS songs
              WHERE lycia_has_genre(songs.genre){search_predicate} ORDER BY songs.path"
         );
         let mut stmt = conn.prepare(&sql).map_err(|error| error.to_string())?;
@@ -1295,7 +1298,7 @@ pub async fn get_library_song_paths_by_album(
         let mut stmt = conn
             .prepare(
                 "SELECT path, title, artist, added_at, track_number, disc_number, album, album_artist, album_key
-                 FROM songs
+                 FROM catalog_songs AS songs
                  WHERE LOWER(
                     COALESCE(
                       NULLIF(TRIM(album_key), ''),
@@ -1401,7 +1404,7 @@ fn load_all_view_song_paths_with_artist_mode(
     }
     let mut sql = String::from(
         "SELECT songs.path
-             FROM songs
+             FROM catalog_songs AS songs
              WHERE 1 = 1",
     );
     let mut params: Vec<String> = Vec::new();
@@ -1586,7 +1589,7 @@ fn load_all_view_song_labels(
         search_index_is_complete(conn),
         album_artist,
     );
-    let sql = format!("SELECT songs.path, songs.title FROM songs{filter}");
+    let sql = format!("SELECT songs.path, songs.title FROM catalog_songs AS songs{filter}");
     let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
     let labels = statement
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
@@ -1717,7 +1720,7 @@ fn load_all_view_song_page_with_artist_mode(
         search_index_is_complete(conn),
         album_artist,
     );
-    let count_sql = format!("SELECT COUNT(*) FROM songs{filter}");
+    let count_sql = format!("SELECT COUNT(*) FROM catalog_songs AS songs{filter}");
     let total = conn
         .query_row(
             &count_sql,
@@ -1728,7 +1731,7 @@ fn load_all_view_song_page_with_artist_mode(
         .max(0) as u64;
 
     let page_sql = format!(
-        "SELECT {LIBRARY_SONG_PAGE_COLUMNS} FROM songs{filter}{} LIMIT {limit} OFFSET {offset}",
+        "SELECT {LIBRARY_SONG_PAGE_COLUMNS} FROM catalog_songs AS songs{filter}{} LIMIT {limit} OFFSET {offset}",
         all_view_page_order(&sort_mode),
     );
     let mut statement = conn.prepare(&page_sql).map_err(|error| error.to_string())?;
@@ -1796,7 +1799,7 @@ fn load_all_view_song_path_page_with_artist_mode(
     );
     let total = conn
         .query_row(
-            &format!("SELECT COUNT(*) FROM songs{filter}"),
+            &format!("SELECT COUNT(*) FROM catalog_songs AS songs{filter}"),
             rusqlite::params_from_iter(params.iter()),
             |row| row.get::<_, i64>(0),
         )
@@ -1813,7 +1816,7 @@ fn load_all_view_song_path_page_with_artist_mode(
         ("", all_view_page_order(&sort_mode))
     };
     let sql =
-        format!("SELECT songs.path FROM songs{join}{filter}{order} LIMIT {limit} OFFSET {offset}");
+        format!("SELECT songs.path FROM catalog_songs AS songs{join}{filter}{order} LIMIT {limit} OFFSET {offset}");
     let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
     let paths = statement
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
@@ -2364,6 +2367,40 @@ mod tests {
             [],
         )
         .expect("create cached literal search index");
+        create_test_catalog_view(conn);
+    }
+
+    fn create_test_catalog_view(conn: &Connection) {
+        conn.execute_batch("CREATE TABLE navidrome_local_files (source_id TEXT, root TEXT, uri TEXT PRIMARY KEY, path TEXT, size INTEGER, modified INTEGER);
+                            CREATE TABLE remote_sources (id TEXT PRIMARY KEY, root_path TEXT);").unwrap();
+        crate::database::schema::create_catalog_view(conn).unwrap();
+    }
+
+    #[test]
+    fn catalog_folds_verified_mirrors_but_keeps_playlist_aliases_and_other_recordings() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_cached_song_schema(&conn);
+        conn.execute_batch("INSERT INTO remote_sources VALUES ('server', '/music');
+            INSERT INTO songs(path,title,source_type,remote_source_id,file_size,file_modified_at) VALUES
+              ('/music/a.flac','Same title','local',NULL,100,2),
+              ('/music/live.flac','Same title','local',NULL,99,2),
+              ('remote://server/a','Same title','remote','server',100,2),
+              ('remote://server/other','Same title','remote','server',102,2);
+            INSERT INTO navidrome_local_files VALUES ('server','/music','remote://server/a','/music/a.flac',100,2000000000);").unwrap();
+        let catalog_paths = || load_all_view_song_paths(&conn, None, None, None, LibrarySongSortMode::Title).unwrap();
+        let paths = catalog_paths();
+        assert_eq!(load_cached_song_paths(&conn).unwrap().len(), 4);
+        assert_eq!(paths.len(), 3);
+        assert!(!paths.iter().any(|p| p == "remote://server/a"));
+        let page = load_all_view_song_page(&conn, Some("Same".into()), None, None,
+            LibrarySongSortMode::Title, 0, 10).unwrap();
+        assert_eq!(page.total, 3);
+        let aliases = vec!["remote://server/a".to_owned(), "/music/a.flac".to_owned()];
+        assert_eq!(load_library_songs_by_paths(&conn, &aliases).unwrap().len(), 2);
+        conn.execute("UPDATE songs SET file_modified_at=3 WHERE path='/music/a.flac'", []).unwrap();
+        assert_eq!(catalog_paths().len(), 4);
+        conn.execute("DELETE FROM songs WHERE path='/music/a.flac'", []).unwrap();
+        assert!(catalog_paths().contains(&aliases[0]));
     }
 
     fn create_album_catalog_schema(conn: &Connection) {
@@ -2380,6 +2417,11 @@ mod tests {
             [],
         )
         .expect("create album catalog schema");
+        conn.execute_batch("ALTER TABLE songs ADD COLUMN source_type TEXT;
+                            ALTER TABLE songs ADD COLUMN remote_source_id TEXT;
+                            ALTER TABLE songs ADD COLUMN file_size INTEGER;
+                            ALTER TABLE songs ADD COLUMN file_modified_at INTEGER;").unwrap();
+        create_test_catalog_view(conn);
     }
 
     fn insert_song(conn: &Connection, path: &str) {

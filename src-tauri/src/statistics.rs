@@ -696,7 +696,7 @@ pub fn get_format_distribution(db: State<DbState>) -> Result<FormatDistribution,
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
     let mut stmt = conn
-        .prepare("SELECT format, container, codec FROM songs")
+        .prepare("SELECT format, container, codec FROM catalog_songs")
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
@@ -749,7 +749,7 @@ pub fn get_quality_distribution(db: State<DbState>) -> Result<QualityDistributio
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
     let mut stmt = conn
-        .prepare("SELECT format, codec, bit_depth, sample_rate, bitrate FROM songs")
+        .prepare("SELECT format, codec, bit_depth, sample_rate, bitrate FROM catalog_songs")
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
@@ -801,7 +801,7 @@ pub fn get_library_stats(db: State<DbState>) -> Result<LibraryStats, String> {
     // 基础统计
     let (total_songs, total_duration, total_file_size): (i64, i64, i64) = conn
         .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(duration), 0), COALESCE(SUM(file_size), 0) FROM songs",
+            "SELECT COUNT(*), COALESCE(SUM(duration), 0), COALESCE(SUM(file_size), 0) FROM catalog_songs",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -810,7 +810,7 @@ pub fn get_library_stats(db: State<DbState>) -> Result<LibraryStats, String> {
     // 专辑数（排除空/未知）- 在 Rust 端过滤
     let album_count: i64 = {
         let mut stmt = conn
-            .prepare("SELECT DISTINCT album FROM songs WHERE album IS NOT NULL AND album != ''")
+            .prepare("SELECT DISTINCT album FROM catalog_songs WHERE album IS NOT NULL AND album != ''")
             .map_err(|e| e.to_string())?;
         let albums: Vec<String> = stmt
             .query_map([], |row| row.get(0))
@@ -824,7 +824,7 @@ pub fn get_library_stats(db: State<DbState>) -> Result<LibraryStats, String> {
     // 歌手数（排除空/未知）
     let artist_count: i64 = {
         let mut stmt = conn
-            .prepare("SELECT DISTINCT artist FROM songs WHERE artist IS NOT NULL AND artist != ''")
+            .prepare("SELECT DISTINCT artist FROM catalog_songs WHERE artist IS NOT NULL AND artist != ''")
             .map_err(|e| e.to_string())?;
         let artists: Vec<String> = stmt
             .query_map([], |row| row.get(0))
@@ -838,7 +838,7 @@ pub fn get_library_stats(db: State<DbState>) -> Result<LibraryStats, String> {
     // 无损数量 + Hi-Res 数量
     let (lossless_count, hires_count): (i64, i64) = {
         let mut stmt = conn
-            .prepare("SELECT format, codec, bit_depth, sample_rate FROM songs")
+            .prepare("SELECT format, codec, bit_depth, sample_rate FROM catalog_songs")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -873,7 +873,7 @@ pub fn get_library_stats(db: State<DbState>) -> Result<LibraryStats, String> {
         // 简化：30天内入库
         let month_start = now - 30 * 24 * 60 * 60;
         conn.query_row(
-            "SELECT COUNT(*) FROM songs WHERE added_at >= ?1",
+            "SELECT COUNT(*) FROM catalog_songs WHERE added_at >= ?1",
             [month_start],
             |row| row.get(0),
         )

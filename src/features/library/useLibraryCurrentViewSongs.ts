@@ -783,7 +783,10 @@ export function useLibraryCurrentViewSongs({
             pathsToRender = lastSuccessfulAllViewSongPaths.value;
           } else if (allViewLoading.value || allViewUseCanonicalFallback.value) {
             // 2. 首次导入空档期且正在加载中：以常驻内存 canonicalSongPaths 辅以本地简排做临时兜底，根除空白
-            pathsToRender = sortSongPathsByLocalMode(canonicalSongPaths.value, localSortMode.value);
+            // Remote paths can be verified mirrors. Only the catalog query can resolve them.
+            if (!canonicalSongPaths.value.some(path => path.startsWith('remote://'))) {
+              pathsToRender = sortSongPathsByLocalMode(canonicalSongPaths.value, localSortMode.value);
+            }
           }
         }
         pathsToRender = pathsToRender.filter(path => canonicalPathSet.value.has(path));

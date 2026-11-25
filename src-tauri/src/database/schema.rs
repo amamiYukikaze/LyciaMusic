@@ -12,6 +12,34 @@ pub(crate) fn configure_connection(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+// Keep both playback identities in songs. Only the combined catalog folds a
+// verified server mirror into its indexed local track.
+pub(crate) fn create_catalog_view(conn: &Connection) -> Result<(), String> {
+    #[cfg(windows)]
+    let path_key = |column: &str| format!("replace({column}, char(92), '/') COLLATE NOCASE");
+    #[cfg(not(windows))]
+    let path_key = |column: &str| column.to_owned();
+
+    let index_key = path_key("path");
+    let local_key = path_key("local.path");
+    let mirror_key = path_key("m.path");
+    conn.execute_batch(&format!(
+        "CREATE INDEX IF NOT EXISTS idx_songs_mirror_path ON songs ({index_key});
+         CREATE TEMP VIEW catalog_songs AS
+         SELECT s.* FROM songs s
+         WHERE s.id NOT IN (
+             SELECT remote.id FROM navidrome_local_files m
+             JOIN songs remote ON remote.path = m.uri AND remote.remote_source_id = m.source_id
+             JOIN remote_sources r ON r.id = m.source_id AND r.root_path = m.root
+             JOIN songs local ON {local_key} = {mirror_key}
+             WHERE remote.source_type = 'remote'
+               AND COALESCE(local.source_type, 'local') = 'local'
+               AND local.file_size = m.size AND local.file_modified_at = m.modified / 1000000000
+         );"
+    ))
+    .map_err(|e| e.to_string())
+}
+
 pub(crate) fn ensure_base_schema(conn: &Connection) -> Result<(), String> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS library_scan_settings (

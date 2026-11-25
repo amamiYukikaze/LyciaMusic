@@ -23,6 +23,7 @@ impl DbState {
         configure_connection(&conn)?;
         ensure_base_schema(&conn)?;
         run_migrations(&conn)?;
+        crate::database::schema::create_catalog_view(&conn)?;
         crate::playlist_import::ensure_schema(&conn)?;
         let storage = app_handle.state::<crate::data_storage::DataStorage>();
         if storage.needs_database_rebase {
